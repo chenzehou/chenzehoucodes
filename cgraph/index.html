@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>CGraph</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#11111b;color:#cdd6f4;font-family:'Segoe UI',sans-serif;overflow:hidden;display:flex;flex-direction:column;height:100vh}
+#toolbar{display:flex;gap:8px;padding:8px 16px;background:#181825;border-bottom:1px solid #313244;align-items:center;z-index:10;flex-wrap:wrap}
+#toolbar button{background:#313244;color:#cdd6f4;border:1px solid #45475a;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
+#toolbar button:hover{background:#45475a}
+#toolbar button.active{background:#89b4fa;color:#11111b;border-color:#89b4fa}
+#workspace{display:flex;flex:1;overflow:hidden}
+#svg-container{flex:1;overflow:auto;background:#1a1a2e;position:relative;min-height:500px}
+svg{width:100%;height:100%;min-width:2000px;min-height:1500px;display:block}
+#sidebar{width:200px;background:#181825;border-left:1px solid #313244;padding:12px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;flex-shrink:0}
+#sidebar h3{color:#89b4fa;font-size:12px;margin-bottom:4px}
+.block-item{background:#313244;padding:6px 12px;border-radius:6px;cursor:grab;font-size:12px;border:1px solid #45475a;transition:all .2s;user-select:none;text-align:center}
+.block-item:hover{background:#45475a;border-color:#89b4fa}
+#code-preview{background:#1e1e2e;border:1px solid #313244;border-radius:6px;padding:10px;font-size:10px;white-space:pre-wrap;max-height:180px;overflow-y:auto;color:#a6e3a1;font-family:monospace}
+#statusbar{background:#181825;border-top:1px solid #313244;padding:3px 16px;font-size:11px;color:#6c7086;display:flex;justify-content:space-between}
+#xml-display{display:block;background:#1e1e2e;border:1px solid #89b4fa;border-radius:6px;padding:8px;max-height:150px;overflow:auto;margin-top:4px}
+#xml-display pre{font-family:monospace;font-size:10px;color:#a6e3a1;margin:0;white-space:pre-wrap;word-break:break-all}
+.block-input{background:#1e1e2e;border:1px solid #45475a;border-radius:3px;color:#cdd6f4;font-family:monospace;font-size:11px;padding:1px 4px;outline:none}
+.block-input:focus{border-color:#89b4fa}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button onclick="newProgram()">📄 新建</button>
+  <button onclick="saveProgram()">💾 保存</button>
+  <button onclick="loadProgram()">📂 打开</button>
+  <button onclick="toggleXML()" class="active">📋 XML</button>
+  <button onclick="runCode()">▶ 运行</button>
+  <span style="flex:1"></span>
+  <span style="font-size:11px;color:#6c7086">CGraph v4.0 (C形容器)</span>
+</div>
+
+<div id="workspace">
+  <div id="svg-container">
+    <svg id="main-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+  <div id="sidebar">
+    <h3>🧩 积木</h3>
+    <div class="block-item" draggable="true" data-type="begin">🚀 开始</div>
+    <div class="block-item" draggable="true" data-type="end">🏁 结束</div>
+    <div class="block-item" draggable="true" data-type="var">📦 变量</div>
+    <div class="block-item" draggable="true" data-type="input">⌨️ scanf</div>
+    <div class="block-item" draggable="true" data-type="print">🖨 printf</div>
+    <div class="block-item" draggable="true" data-type="repeat" style="border-color:#74c7ec">🔁 循环 (容器)</div>
+    <div class="block-item" draggable="true" data-type="if" style="border-color:#cba6f7">🔀 条件 (容器)</div>
+    <hr style="border-color:#313244;margin:6px 0">
+    <button onclick="clearAll()" style="background:#45475a;color:#cdd6f4;border:none;padding:4px;border-radius:4px;cursor:pointer;font-size:11px">🗑 清空所有</button>
+    <hr style="border-color:#313244;margin:6px 0">
+    <div id="xml-display">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="color:#89b4fa;font-size:11px">📋 XML</span>
+        <button onclick="copyXML()" style="background:#313244;color:#cdd6f4;border:none;padding:1px 8px;border-radius:4px;cursor:pointer;font-size:10px">复制</button>
+      </div>
+      <pre id="xml-content" style="font-family:monospace;font-size:10px;color:#a6e3a1;margin:0;white-space:pre-wrap;word-break:break-all"></pre>
+    </div>
+    <hr style="border-color:#313244;margin:6px 0">
+    <h3>💻 C++代码</h3>
+    <div id="code-preview">// 拖入积木开始</div>
+  </div>
+</div>
+
+<div id="statusbar">
+  <span id="status-text">就绪 — 拖入积木，靠近自动吸附</span>
+  <span id="cursor-pos">积木: 0</span>
+</div>
+
+<script>
+// ============================================================
+// Block类
+// ============================================================
+class Block {
+  constructor(type, x=100, y=100) {
+    this.id = 'b' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    this.type = type;
+    this.x = x;
+    this.y = y;
+    this.w = 200;
+    this.h = 30;
+    this.parentId = null;
+    this.children = [];
+    // 容器属性
+    this.isContainer = (type === 'repeat' || type === 'if');
+    this.varType = 'int';
+    this.varName = 'x';
+    this.inputFmt = '%d';
+    this.inputVars = '&x';
+    this.printFmt = '%d';
+    this.printVars = 'x';
+    this.repeatVar = 'i';
+    this.repeatFrom = '1';
+    this.repeatTo = '10';
+    this.ifCond = 'true';
+  }
+}
+
+// ============================================================
+// 全局状态
+// ============================================================
+let blocks = new Map();
+let rootBlocks = [];
+let selectedId = null;
+let dragData = null;
+let xmlVisible = true;
+let dragContainerTarget = null;
+
+const svg = document.getElementById('main-svg');
+const statusText = document.getElementById('status-text');
+const cursorPos = document.getElementById('cursor-pos');
+const codePreview = document.getElementById('code-preview');
+const xmlContent = document.getElementById('xml-content');
+const xmlDisplay = document.getElementById('xml-display');
+
+const BLOCK_COLORS = {
+  begin:  { bg: '#1e3a2a', border: '#49c78a' },
+  end:    { bg: '#3a1e2a', border: '#f28b8b' },
+  var:    { bg: '#1e2a3a', border: '#89b4fa' },
+  input:  { bg: '#2a3a1e', border: '#a6e3a1' },
+  print:  { bg: '#3a2a1e', border: '#f9e2af' },
+  repeat: { bg: '#1a2a3a', border: '#74c7ec' },
+  if:     { bg: '#2a1a3a', border: '#cba6f7' },
+};
+
+// ============================================================
+// 判断积木是否可以放入容器
+// ============================================================
+function canBeChild(blockType) {
+  return blockType !== 'begin' && blockType !== 'end';
+}
+
+// ============================================================
+// 渲染引擎
+// ============================================================
+function renderAll() {
+  svg.innerHTML = '';
+  const sorted = [];
+  const visited = new Set();
+  for (const id of rootBlocks) {
+    traverse(id, sorted, visited);
+  }
+  for (const id of sorted) {
+    const block = blocks.get(id);
+    if (block) renderBlock(block);
+  }
+  cursorPos.textContent = '积木: ' + blocks.size;
+  updateCodeAndXML();
+}
+
+function traverse(id, sorted, visited) {
+  if (visited.has(id)) return;
+  visited.add(id);
+  sorted.push(id);
+  const block = blocks.get(id);
+  if (block) {
+    for (const cid of block.children) {
+      traverse(cid, sorted, visited);
+    }
+  }
+}
+
+function renderBlock(block) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.id = 'block-' + block.id;
+  g.setAttribute('transform', `translate(${block.x}, ${block.y})`);
+  g.style.cursor = 'move';
+  
+  const isSelected = (selectedId === block.id);
+  const color = BLOCK_COLORS[block.type] || BLOCK_COLORS.var;
+  const w = block.w;
+  const h = block.h;
+  
+  if (block.isContainer) {
+    // ===== 容器积木：C形（右开框） =====
+    // 外边框（C形路径）
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const r = 4;
+    // 路径：左上角 → 右上角 → 右中上 → 右中下 → 右下角 → 左下角 → 回到左上
+    const d = `
+      M ${r},0 
+      L ${w-r},0 
+      Q ${w},0 ${w},${r}
+      L ${w},${h/2 - 10}
+      L ${w-10},${h/2}
+      L ${w},${h/2 + 10}
+      L ${w},${h-r}
+      Q ${w},${h} ${w-r},${h}
+      L ${r},${h}
+      Q ${0},${h} ${0},${h-r}
+      L ${0},${r}
+      Q ${0},0 ${r},0
+      Z
+    `;
+    path.setAttribute('d', d);
+    path.setAttribute('fill', color.bg);
+    path.setAttribute('stroke', isSelected ? '#f9e2af' : color.border);
+    path.setAttribute('stroke-width', isSelected ? '2.5' : '1.5');
+    g.appendChild(path);
+    
+    // 内部区域（用于放子积木的虚线框提示）
+    if (block.children.length === 0) {
+      const inner = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      inner.setAttribute('x', '6');
+      inner.setAttribute('y', h + 4);
+      inner.setAttribute('width', w - 40);
+      inner.setAttribute('height', '20');
+      inner.setAttribute('rx', '2');
+      inner.setAttribute('fill', 'none');
+      inner.setAttribute('stroke', color.border);
+      inner.setAttribute('stroke-width', '0.5');
+      inner.setAttribute('stroke-dasharray', '4 4');
+      g.appendChild(inner);
+      
+      const hint = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      hint.setAttribute('x', w/2 - 20);
+      hint.setAttribute('y', h + 18);
+      hint.setAttribute('fill', '#6c7086');
+      hint.setAttribute('font-size', '9');
+      hint.setAttribute('font-family', 'sans-serif');
+      hint.textContent = '拖入积木';
+      g.appendChild(hint);
+    }
+    
+    // 内容区
+    const fo = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+    fo.setAttribute('x', '8');
+    fo.setAttribute('y', '2');
+    fo.setAttribute('width', w - 30);
+    fo.setAttribute('height', h - 4);
+    fo.setAttribute('style', 'overflow:visible');
+    
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;align-items:center;gap:4px;height:100%;font-size:12px;color:#cdd6f4;font-family:sans-serif;flex-wrap:wrap';
+    
+    if (block.type === 'repeat') {
+      div.innerHTML = `
+        <span style="color:#74c7ec">🔁 for</span>
+        <input class="block-input" data-id="${block.id}" data-field="repeatVar" value="${block.repeatVar}" style="width:25px" />
+        <span style="color:#6c7086;font-size:10px">=</span>
+        <input class="block-input" data-id="${block.id}" data-field="repeatFrom" value="${block.repeatFrom}" style="width:25px" />
+        <span style="color:#6c7086;font-size:10px">→</span>
+        <input class="block-input" data-id="${block.id}" data-field="repeatTo" value="${block.repeatTo}" style="width:25px" />
+      `;
+    } else if (block.type === 'if') {
+      div.innerHTML = `
+        <span style="color:#cba6f7">🔀 if</span>
+        <input class="block-input" data-id="${block.id}" data-field="ifCond" value="${block.ifCond}" style="width:100px" placeholder="条件" />
+      `;
+    }
+    fo.appendChild(div);
+    g.appendChild(fo);
+    
+    // 容器底部闭合线（视觉上表示"框"的底部）
+    const bottomLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    bottomLine.setAttribute('x1', '6');
+    bottomLine.setAttribute('y1', h + 2);
+    bottomLine.setAttribute('x2', w - 20);
+    bottomLine.setAttribute('y2', h + 2);
+    bottomLine.setAttribute('stroke', color.border);
+    bottomLine.setAttribute('stroke-width', '0.5');
+    bottomLine.setAttribute('stroke-dasharray', '3 3');
+    g.appendChild(bottomLine);
+    
+  } else {
+    // ===== 普通积木：完整矩形 =====
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', h);
+    rect.setAttribute('rx', '2');
+    rect.setAttribute('fill', color.bg);
+    rect.setAttribute('stroke', isSelected ? '#f9e2af' : color.border);
+    rect.setAttribute('stroke-width', isSelected ? '2.5' : '1.5');
+    g.appendChild(rect);
+    
+    // 内容区
+    const fo = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+    fo.setAttribute('x', '6');
+    fo.setAttribute('y', '2');
+    fo.setAttribute('width', w - 12);
+    fo.setAttribute('height', h - 4);
+    fo.setAttribute('style', 'overflow:visible');
+    
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;align-items:center;gap:4px;height:100%;font-size:12px;color:#cdd6f4;font-family:sans-serif;flex-wrap:wrap';
+    
+    switch(block.type) {
+      case 'begin':
+        div.innerHTML = '<span style="color:#49c78a;font-weight:bold">🚀 开始</span>';
+        break;
+      case 'end':
+        div.innerHTML = '<span style="color:#f28b8b;font-weight:bold">🏁 结束</span>';
+        break;
+      case 'var':
+        div.innerHTML = `
+          <span style="color:#89b4fa">📦</span>
+          <select class="block-input" data-id="${block.id}" data-field="varType" style="background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;border-radius:3px;font-size:11px;padding:1px 4px;outline:none">
+            <option value="int" ${block.varType==='int'?'selected':''}>int</option>
+            <option value="float" ${block.varType==='float'?'selected':''}>float</option>
+            <option value="char" ${block.varType==='char'?'selected':''}>char</option>
+            <option value="bool" ${block.varType==='bool'?'selected':''}>bool</option>
+            <option value="string" ${block.varType==='string'?'selected':''}>string</option>
+          </select>
+          <input class="block-input" data-id="${block.id}" data-field="varName" value="${block.varName}" style="width:50px" />
+        `;
+        break;
+      case 'input':
+        div.innerHTML = `
+          <span style="color:#a6e3a1">⌨️ scanf</span>
+          <input class="block-input" data-id="${block.id}" data-field="inputFmt" value="${block.inputFmt}" style="width:55px" placeholder="格式" />
+          <input class="block-input" data-id="${block.id}" data-field="inputVars" value="${block.inputVars}" style="width:55px" placeholder="变量" />
+        `;
+        break;
+      case 'print':
+        div.innerHTML = `
+          <span style="color:#f9e2af">🖨 printf</span>
+          <input class="block-input" data-id="${block.id}" data-field="printFmt" value="${block.printFmt}" style="width:55px" placeholder="格式" />
+          <input class="block-input" data-id="${block.id}" data-field="printVars" value="${block.printVars}" style="width:55px" placeholder="变量" />
+        `;
+        break;
+    }
+    fo.appendChild(div);
+    g.appendChild(fo);
+  }
+  
+  // ===== 事件绑定 =====
+  g.addEventListener('mousedown', (e) => {
+    const target = e.target;
+    if (target.closest && target.closest('.block-input')) return;
+    if (target.tagName === 'SELECT' || target.tagName === 'INPUT') return;
+    if (e.button === 0) {
+      selectedId = block.id;
+      renderAll();
+      e.stopPropagation();
+    }
+  });
+  
+  g.addEventListener('mousedown', (e) => {
+    const target = e.target;
+    if (target.closest && target.closest('.block-input')) return;
+    if (target.tagName === 'SELECT' || target.tagName === 'INPUT') return;
+    if (e.button === 0) {
+      const rect = svg.getBoundingClientRect();
+      const scaleX = svg.viewBox.baseVal.width / rect.width || 1;
+      const scaleY = svg.viewBox.baseVal.height / rect.height || 1;
+      dragData = {
+        blockId: block.id,
+        offsetX: (e.clientX - rect.left) * scaleX - block.x,
+        offsetY: (e.clientY - rect.top) * scaleY - block.y,
+      };
+      e.stopPropagation();
+    }
+  });
+  
+  svg.appendChild(g);
+}
+
+// ============================================================
+// 输入框事件
+// ============================================================
+document.addEventListener('input', (e) => {
+  const target = e.target;
+  if (target.classList && target.classList.contains('block-input')) {
+    const id = target.dataset.id;
+    const field = target.dataset.field;
+    const block = blocks.get(id);
+    if (block) {
+      block[field] = target.value;
+      updateCodeAndXML();
+    }
+  }
+});
+
+document.addEventListener('change', (e) => {
+  const target = e.target;
+  if (target.tagName === 'SELECT' && target.closest && target.closest('.block-input')) {
+    const id = target.dataset.id;
+    const field = target.dataset.field;
+    const block = blocks.get(id);
+    if (block) {
+      block[field] = target.value;
+      updateCodeAndXML();
+    }
+  }
+});
+
+// ============================================================
+// 拖拽 + 智能吸附（支持容器嵌套）
+// ============================================================
+document.addEventListener('mousemove', (e) => {
+  if (!dragData) return;
+  const rect = svg.getBoundingClientRect();
+  const scaleX = svg.viewBox.baseVal.width / rect.width || 1;
+  const scaleY = svg.viewBox.baseVal.height / rect.height || 1;
+  const block = blocks.get(dragData.blockId);
+  if (!block) return;
+  
+  block.x = Math.max(0, (e.clientX - rect.left) * scaleX - dragData.offsetX);
+  block.y = Math.max(0, (e.clientY - rect.top) * scaleY - dragData.offsetY);
+  
+  // 检测是否悬停在容器上方
+  detectContainerHover(block);
+  snapBlock(block);
+  renderAll();
+});
+
+document.addEventListener('mouseup', () => {
+  if (dragData) {
+    const block = blocks.get(dragData.blockId);
+    if (block) {
+      snapBlock(block, true);
+      // 尝试放入容器
+      tryInsertIntoContainer(block);
+      cleanupEmptyParents();
+      renderAll();
+    }
+    dragData = null;
+    dragContainerTarget = null;
+  }
+});
+
+// ============================================================
+// 检测容器悬停
+// ============================================================
+function detectContainerHover(block) {
+  dragContainerTarget = null;
+  for (const [id, other] of blocks) {
+    if (id === block.id) continue;
+    if (!other.isContainer) continue;
+    // 检测block是否在other的内部区域
+    const cx = block.x + block.w/2;
+    const cy = block.y + block.h/2;
+    const innerX = other.x + 10;
+    const innerY = other.y + other.h + 5;
+    const innerW = other.w - 30;
+    const innerH = Math.max(100, other.children.length * 35 + 20);
+    if (cx > innerX && cx < innerX + innerW && cy > innerY && cy < innerY + innerH) {
+      dragContainerTarget = other;
+      break;
+    }
+  }
+}
+
+// ============================================================
+// 尝试放入容器
+// ============================================================
+function tryInsertIntoContainer(block) {
+  if (!dragContainerTarget) return;
+  if (block.type === 'begin' || block.type === 'end') return;
+  if (block.id === dragContainerTarget.id) return;
+  
+  // 检查是否已经在容器中
+  if (block.parentId === dragContainerTarget.id) return;
+  
+  // 从旧父移除
+  if (block.parentId) {
+    const oldParent = blocks.get(block.parentId);
+    if (oldParent) {
+      oldParent.children = oldParent.children.filter(id => id !== block.id);
+    }
+  }
+  rootBlocks = rootBlocks.filter(id => id !== block.id);
+  
+  // 添加到新容器
+  dragContainerTarget.children.push(block.id);
+  block.parentId = dragContainerTarget.id;
+  
+  // 调整位置：在容器内部左对齐，并放到最底部
+  const childIndex = dragContainerTarget.children.length - 1;
+  block.x = dragContainerTarget.x + 15;
+  block.y = dragContainerTarget.y + dragContainerTarget.h + 5 + childIndex * 35;
+  
+  statusText.textContent = '已放入容器';
+}
+
+// ============================================================
+// 吸附逻辑（上下承接 + 嵌套）
+// ============================================================
+function snapBlock(block, finalize = false) {
+  const SNAP_DIST = 25;
+  let bestParent = null;
+  let bestDist = SNAP_DIST;
+  
+  for (const [id, other] of blocks) {
+    if (id === block.id) continue;
+    // 不能把容器放入自身
+    if (other.isContainer && block.id === other.id) continue;
+    
+    // 水平对齐检查
+    const dx = Math.abs(block.x - other.x);
+    if (dx > 15) continue;
+    
+    // block在other下方
+    const dy = block.y - (other.y + other.h);
+    if (dy < 0 || dy > SNAP_DIST) continue;
+    
+    if (dy < bestDist) {
+      bestParent = other;
+      bestDist = dy;
+    }
+  }
+  
+  if (bestParent) {
+    // 只有普通语句可以承接子积木
+    if (bestParent.type === 'end') return;
+    
+    block.x = bestParent.x;
+    block.y = bestParent.y + bestParent.h + 0;
+    
+    if (block.parentId !== bestParent.id) {
+      // 从旧父移除
+      if (block.parentId) {
+        const oldParent = blocks.get(block.parentId);
+        if (oldParent) {
+          oldParent.children = oldParent.children.filter(id => id !== block.id);
+        }
+      }
+      rootBlocks = rootBlocks.filter(id => id !== block.id);
+      bestParent.children.push(block.id);
+      block.parentId = bestParent.id;
+    }
+  } else if (finalize) {
+    // 脱离父积木
+    if (block.parentId) {
+      const parent = blocks.get(block.parentId);
+      if (parent) {
+        const dy = block.y - (parent.y + parent.h);
+        if (dy > 40) {
+          parent.children = parent.children.filter(id => id !== block.id);
+          block.parentId = null;
+          rootBlocks.push(block.id);
+        }
+      }
+    }
+  }
+}
+
+function cleanupEmptyParents() {
+  for (const [id, block] of blocks) {
+    if (block.type === 'end' && block.children.length > 0) {
+      for (const cid of block.children) {
+        const child = blocks.get(cid);
+        if (child) {
+          child.parentId = null;
+          rootBlocks.push(cid);
+        }
+      }
+      block.children = [];
+    }
+  }
+}
+
+// ============================================================
+// 键盘事件
+// ============================================================
+document.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) {
+    return;
+  }
+  if (e.key === 'Delete' && selectedId) {
+    deleteBlock(selectedId);
+    selectedId = null;
+    renderAll();
+    statusText.textContent = '已删除积木';
+    e.preventDefault();
+  }
+});
+
+function deleteBlock(id) {
+  const block = blocks.get(id);
+  if (!block) return;
+  // 递归删除子积木
+  for (const cid of block.children) {
+    deleteBlock(cid);
+  }
+  if (block.parentId) {
+    const parent = blocks.get(block.parentId);
+    if (parent) {
+      parent.children = parent.children.filter(cid => cid !== id);
+    }
+  }
+  rootBlocks = rootBlocks.filter(cid => cid !== id);
+  blocks.delete(id);
+}
+
+// ============================================================
+// 从侧边栏拖入
+// ============================================================
+svg.addEventListener('dragover', (e) => e.preventDefault());
+
+svg.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const type = e.dataTransfer.getData('text/plain');
+  if (!type) return;
+  
+  const rect = svg.getBoundingClientRect();
+  const scaleX = svg.viewBox.baseVal.width / rect.width || 1;
+  const scaleY = svg.viewBox.baseVal.height / rect.height || 1;
+  const x = Math.max(0, (e.clientX - rect.left) * scaleX - 100);
+  const y = Math.max(0, (e.clientY - rect.top) * scaleY - 15);
+  
+  const block = new Block(type, x, y);
+  if (type === 'var') { block.varName = 'x'; block.varType = 'int'; }
+  else if (type === 'input') { block.inputFmt = '%d'; block.inputVars = '&x'; }
+  else if (type === 'print') { block.printFmt = '%d'; block.printVars = 'x'; }
+  else if (type === 'repeat') { block.repeatVar = 'i'; block.repeatFrom = '1'; block.repeatTo = '10'; }
+  else if (type === 'if') { block.ifCond = 'true'; }
+  
+  blocks.set(block.id, block);
+  rootBlocks.push(block.id);
+  snapBlock(block, true);
+  renderAll();
+  statusText.textContent = '已添加: ' + type;
+});
+
+document.querySelectorAll('.block-item').forEach(el => {
+  el.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', el.dataset.type);
+  });
+});
+
+// ============================================================
+// 生成XML和代码
+// ============================================================
+function generateXML() {
+  let xml = '<cgraph>\n';
+  for (const id of rootBlocks) {
+    xml += blockToXML(blocks.get(id), 2);
+  }
+  xml += '</cgraph>';
+  return xml;
+}
+
+function blockToXML(block, indent) {
+  if (!block) return '';
+  const sp = ' '.repeat(indent);
+  const tag = block.type;
+  let attrs = '';
+  switch(block.type) {
+    case 'begin': case 'end': break;
+    case 'var': attrs += ` type="${block.varType}" name="${block.varName}"`; break;
+    case 'input': attrs += ` fmt="${block.inputFmt}" vars="${block.inputVars}"`; break;
+    case 'print': attrs += ` fmt="${block.printFmt}" vars="${block.printVars}"`; break;
+    case 'repeat': attrs += ` var="${block.repeatVar}" l="${block.repeatFrom}" r="${block.repeatTo}"`; break;
+    case 'if': attrs += ` cond="${block.ifCond}"`; break;
+  }
+  if (block.children.length === 0 && block.type !== 'begin' && block.type !== 'repeat' && block.type !== 'if') {
+    return sp + `<${tag}${attrs} />\n`;
+  }
+  let xml = sp + `<${tag}${attrs}>\n`;
+  for (const cid of block.children) {
+    xml += blockToXML(blocks.get(cid), indent + 2);
+  }
+  xml += sp + `</${tag}>\n`;
+  return xml;
+}
+
+function generateCode(block, indent=0) {
+  if (!block) return '';
+  const sp = ' '.repeat(indent);
+  switch(block.type) {
+    case 'begin':
+      let code = '';
+      for (const cid of block.children) code += generateCode(blocks.get(cid), indent);
+      return code;
+    case 'end': return '';
+    case 'var': return sp + block.varType + ' ' + block.varName + ';\n';
+    case 'input': return sp + 'scanf("' + block.inputFmt + '", ' + block.inputVars + ');\n';
+    case 'print': return sp + 'printf("' + block.printFmt + '", ' + block.printVars + ');\n';
+    case 'repeat': {
+      let code = sp + 'for(int ' + block.repeatVar + '=' + block.repeatFrom + '; ' +
+                  block.repeatVar + '<=' + block.repeatTo + '; ' +
+                  block.repeatVar + '++) {\n';
+      for (const cid of block.children) code += generateCode(blocks.get(cid), indent+2);
+      code += sp + '}\n';
+      return code;
+    }
+    case 'if': {
+      let code = sp + 'if (' + block.ifCond + ') {\n';
+      for (const cid of block.children) code += generateCode(blocks.get(cid), indent+2);
+      code += sp + '}\n';
+      return code;
+    }
+    default: return '';
+  }
+}
+
+function generateFullCode() {
+  let code = '#include <cstdio>\n#include <iostream>\nusing namespace std;\n\nint main() {\n';
+  for (const id of rootBlocks) {
+    code += generateCode(blocks.get(id), 2);
+  }
+  code += '  return 0;\n}\n';
+  return code;
+}
+
+function updateCodeAndXML() {
+  if (blocks.size === 0) {
+    codePreview.textContent = '// 拖入积木开始编程';
+    xmlContent.textContent = '<cgraph>\n  <!-- 空 -->\n</cgraph>';
+    return;
+  }
+  codePreview.textContent = generateFullCode();
+  xmlContent.textContent = generateXML();
+}
+
+// ============================================================
+// 工具栏
+// ============================================================
+function newProgram() {
+  if (blocks.size > 0 && !confirm('确定清空吗？')) return;
+  blocks.clear(); rootBlocks = []; selectedId = null; renderAll();
+  statusText.textContent = '新建';
+}
+
+function saveProgram() {
+  const blob = new Blob([generateXML()], {type:'text/xml'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'program.cgr';
+  a.click();
+  statusText.textContent = '已保存';
+}
+
+function loadProgram() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.cgr,.xml';
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { loadDemo(); };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+function loadDemo() {
+  blocks.clear(); rootBlocks = [];
+  const b1 = new Block('begin', 60, 30);
+  const b2 = new Block('var', 60, 60);
+  b2.varName = 'n'; b2.varType = 'int';
+  const b3 = new Block('input', 60, 90);
+  b3.inputFmt = '%d'; b3.inputVars = '&n';
+  const b4 = new Block('repeat', 60, 130);
+  b4.repeatVar = 'i'; b4.repeatFrom = '1'; b4.repeatTo = 'n';
+  const b5 = new Block('print', 75, 170);
+  b5.printVars = 'i'; b5.printFmt = '%d ';
+  const b6 = new Block('end', 60, 210);
+  
+  blocks.set(b1.id,b1); blocks.set(b2.id,b2); blocks.set(b3.id,b3);
+  blocks.set(b4.id,b4); blocks.set(b5.id,b5); blocks.set(b6.id,b6);
+  b1.children = [b2.id,b3.id,b4.id,b6.id];
+  b2.parentId=b1.id; b3.parentId=b1.id; b4.parentId=b1.id; b6.parentId=b1.id;
+  b4.children=[b5.id]; b5.parentId=b4.id;
+  rootBlocks=[b1.id];
+  renderAll();
+  statusText.textContent = '已加载示例（容器嵌套演示）';
+}
+
+function toggleXML() {
+  xmlVisible = !xmlVisible;
+  xmlDisplay.style.display = xmlVisible ? 'block' : 'none';
+  statusText.textContent = xmlVisible ? 'XML可见' : 'XML隐藏';
+}
+
+function copyXML() {
+  const text = xmlContent.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    statusText.textContent = '已复制';
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    statusText.textContent = '已复制';
+  });
+}
+
+function runCode() {
+  alert('生成的C++代码：\n\n' + generateFullCode());
+  statusText.textContent = '代码已生成';
+}
+
+function clearAll() {
+  if (blocks.size === 0) return;
+  if (!confirm('确定清空所有积木吗？')) return;
+  blocks.clear(); rootBlocks = []; renderAll();
+  statusText.textContent = '已清空';
+}
+loadDemo();
+</script>
+</body>
+</html>
