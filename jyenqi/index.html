@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>明军棋 AI</title>
+<style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#1a1a2e;padding:16px;display:flex;justify-content:center;font-family:system-ui,sans-serif;}
+    .container{background:#16213e;border-radius:16px;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,0.6);}
+    .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;}
+    .title{color:#e0e0e0;font-size:20px;font-weight:600;}.title span{color:#f5a623;}
+    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    .controls button{background:#2a3a5e;color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;}
+    .controls button:hover{background:#3a5a7e;}
+    #msg{color:#8ac4ff;font-size:14px;padding:4px 12px;background:#0f1a2e;border-radius:20px;}
+    canvas{display:block;width:100%;max-width:500px;height:auto;aspect-ratio:5/6;cursor:pointer;border-radius:8px;background:#0f1a2e;}
+    .stats{color:#6a8aaa;font-size:12px;margin-top:8px;display:flex;gap:20px;}
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="title">⚔️ 明军棋 <span>AI</span></div>
+        <div class="controls">
+            <button onclick="resetGame()">🔄 新局</button>
+            <button onclick="undoMove()">↩ 悔棋</button>
+            <span id="msg">🔴 你的回合</span>
+        </div>
+    </div>
+    <canvas id="cv" width="500" height="600"></canvas>
+    <div class="stats"><span id="statInfo">红 0 | 蓝 0</span></div>
+</div>
+<script>
+// ============================================================
+// 常量：13行 × 5列 (行0-12)
+// ============================================================
+const R=13,C=5;
+const EMP=0,SJL=1,JUN=2,SHI=3,LV=4,TUAN=5,YING=6,LIAN=7,PAI=8,GONG=9,ZADAN=10,DILEI=11,QIQI=12;
+const NAME={1:'司令',2:'军长',3:'师长',4:'旅长',5:'团长',6:'营长',7:'连长',8:'排长',9:'工兵',10:'炸弹',11:'地雷',12:'军旗'};
+const VAL={1:1000,2:850,3:700,4:550,5:400,6:280,7:180,8:100,9:120,10:350,11:200,12:0};
+const INF=999999,DEPTH=4;
+
+const ALL=[SJL,JUN,SHI,SHI,LV,LV,TUAN,TUAN,YING,YING,LIAN,LIAN,LIAN,PAI,PAI,PAI,GONG,GONG,GONG,ZADAN,ZADAN,DILEI,DILEI,DILEI,QIQI];
+
+let board=[],sel=null,history=[],canvas,ctx,cellW,cellH,thinking=false;
+
+// ============================================================
+// 行营定义
+// ============================================================
+const campSet=new Set();
+const CAMP_BLUE=[[2,1],[2,3],[3,2],[4,1],[4,3]];
+const CAMP_RED=[[8,1],[8,3],[9,2],[10,1],[10,3]];
+const ALL_CAMPS=[...CAMP_BLUE,...CAMP_RED];
+
+const FLAG_BLUE=[3,2];
+const FLAG_RED=[9,2];
+
+function isCamp(r,c){return campSet.has(r+','+c);}
+function isMountain(r,c){return (r===6 && (c===1 || c===3));}
+function isIn(r,c){return r>=0&&r<R&&c>=0&&c<C;}
+function clone(b){return b.map(r=>r.map(c=>({...c})));}
+function cnt(b,s){let n=0;for(let r=0;r<R;r++)for(let c=0;c<C;c++)if(b[r][c].side===s)n++;return n;}
+function shuffle(a){for(let i=a.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+
+function initBoard(){
+    board=[];campSet.clear();
+    for(let r=0;r<R;r++){board[r]=[];for(let c=0;c<C;c++)board[r][c]={side:-1,piece:EMP};}
+    ALL_CAMPS.forEach(([r,c])=>campSet.add(r+','+c));
+}
+
+// ============================================================
+// 铁路判定
+// ============================================================
+function isRailNode(r,c){
+    if(r===1)return true;
+    if(r===11)return true;
+    if(r===6)return true;
+    if(r===5)return true;
+    if(r===7)return true;
+    if(c===0||c===4)return true;
+    if(c===2 && r>=5 && r<=7)return true;
+    return false;
+}
+
+function isRailConnected(r1,c1,r2,c2){
+    const dr=Math.abs(r1-r2),dc=Math.abs(c1-c2);
+    if(dr+dc!==1)return false;
+    if(!isRailNode(r1,c1)||!isRailNode(r2,c2))return false;
+    if(r1===0&&r2===1&&c1===0&&c2===0)return false;
+    if(r1===1&&r2===0&&c1===0&&c2===0)return false;
+    if(r1===0&&r2===1&&c1===4&&c2===4)return false;
+    if(r1===1&&r2===0&&c1===4&&c2===4)return false;
+    if(r1===11&&r2===12&&c1===0&&c2===0)return false;
+    if(r1===12&&r2===11&&c1===0&&c2===0)return false;
+    if(r1===11&&r2===12&&c1===4&&c2===4)return false;
+    if(r1===12&&r2===11&&c1===4&&c2===4)return false;
+    return true;
+}
+
+// ============================================================
+// 全局：判断两个格子之间是否画了斜线
+// ============================================================
+function shouldDrawLine(r1,c1,r2,c2){
+    const dr=Math.abs(r1-r2),dc=Math.abs(c1-c2);
+    if(dr+dc===0)return false;
+    if(dr>1||dc>1)return false;
+    if(isMountain(r1,c1)||isMountain(r2,c2))return false;
+    if(dr===1 && dc===1){
+        const allCamps = [...CAMP_BLUE, ...CAMP_RED];
+        let hasCamp = false;
+        for(const [cr,cc] of allCamps){
+            if(Math.abs(r1-cr)===1 && Math.abs(c1-cc)===1 && Math.abs(r2-cr)===1 && Math.abs(c2-cc)===1){
+                hasCamp = true;break;
+            }
+            if((r1===cr && c1===cc) && Math.abs(r2-cr)===1 && Math.abs(c2-cc)===1){
+                hasCamp = true;break;
+            }
+            if((r2===cr && c2===cc) && Math.abs(r1-cr)===1 && Math.abs(c1-cc)===1){
+                hasCamp = true;break;
+            }
+        }
+        if(!hasCamp)return false;
+    }
+    return true;
+}
+
+function setupSide(side,rowStart){
+    let positions=[];
+    for(let r=rowStart;r<rowStart+6;r++){
+        for(let c=0;c<C;c++){
+            if(isMountain(r,c))continue;
+            if(isCamp(r,c))continue;
+            positions.push([r,c]);
+        }
+    }
+    shuffle(positions);
+    let pool=[...ALL];shuffle(pool);
+    
+    let specialPositions = [];
+    if(side===1){
+        specialPositions = [[0,1],[0,3]];
+    }else{
+        specialPositions = [[12,1],[12,3]];
+    }
+    shuffle(specialPositions);
+    
+    let flagPlaced=false, cmdPlaced=false;
+    for(let [r,c] of specialPositions){
+        if(!flagPlaced){
+            board[r][c]={side,piece:QIQI};
+            let idx=pool.indexOf(QIQI);if(idx!==-1)pool.splice(idx,1);
+            flagPlaced=true;
+        }else if(!cmdPlaced){
+            board[r][c]={side,piece:SJL};
+            let idx=pool.indexOf(SJL);if(idx!==-1)pool.splice(idx,1);
+            cmdPlaced=true;
+        }
+    }
+    
+    let mineRows=(side===1)?[0,1]:[10,11];
+    let mineCount=0;
+    for(let [r,c] of positions){
+        if(mineCount>=3)break;
+        if(mineRows.includes(r)&&c!==2&&board[r][c].piece===EMP){
+            let midx=pool.indexOf(DILEI);
+            if(midx!==-1){board[r][c]={side,piece:DILEI};pool.splice(midx,1);mineCount++;}
+        }
+    }
+    
+    let remaining=positions.filter(([r,c])=>board[r][c].piece===EMP);
+    shuffle(remaining);
+    for(let [r,c] of remaining){
+        if(pool.length===0)break;
+        board[r][c]={side,piece:pool.pop()};
+    }
+}
+
+function resetGame(){
+    initBoard();
+    setupSide(1,0);
+    setupSide(0,7);
+    sel=null;history=[];thinking=false;
+    document.getElementById('msg').textContent='🔴 你的回合';
+    updateStats();drawBoard();
+}
+
+// ============================================================
+// 走法生成
+// ============================================================
+function genMoves(b,sr,sc){
+    const cell=b[sr][sc],p=cell.piece,s=cell.side;
+    if(p===QIQI||p===DILEI)return[];
+    const moves=[];
+    
+    // 铁路直走
+    if(isRailNode(sr,sc)){
+        const railDirs=[[-1,0],[1,0],[0,-1],[0,1]];
+        for(const [dr,dc] of railDirs){
+            let nr=sr+dr,nc=sc+dc;
+            while(isIn(nr,nc)&&!isMountain(nr,nc)&&isRailNode(nr,nc)&&isRailConnected(nr-dr,nc-dc,nr,nc)){
+                const tar=b[nr][nc];
+                let blocked=false;
+                let rr=sr+dr,cc=sc+dc;
+                while(!(rr===nr&&cc===nc)){
+                    if(b[rr][cc].side!==-1){blocked=true;break;}
+                    rr+=dr;cc+=dc;
+                }
+                if(blocked)break;
+                if(tar.side===s){break;}
+                let canMove=true;
+                if(isCamp(nr,nc)){
+                    if(tar.side!==-1){
+                        let campOwner=-1;
+                        if(CAMP_BLUE.some(([cr,cc])=>cr===nr&&cc===nc))campOwner=1;
+                        if(CAMP_RED.some(([cr,cc])=>cr===nr&&cc===nc))campOwner=0;
+                        if(tar.side===campOwner)canMove=false;
+                        if(s===campOwner)canMove=false;
+                    }
+                }
+                if(canMove){
+                    moves.push({sr,sc,nr,nc});
+                }
+                if(tar.side!==-1)break;
+                nr+=dr;nc+=dc;
+            }
+        }
+    }
+    
+    // 直走（上下左右）
+    const dirs4=[[-1,0],[1,0],[0,-1],[0,1]];
+    for(const [dr,dc] of dirs4){
+        let nr=sr+dr,nc=sc+dc;
+        if(!isIn(nr,nc))continue;
+        if(isMountain(nr,nc))continue;
+        const tar=b[nr][nc];
+        if(tar.side===s)continue;
+        if(isCamp(nr,nc)){
+            if(tar.side!==-1){
+                let campOwner=-1;
+                if(CAMP_BLUE.some(([cr,cc])=>cr===nr&&cc===nc))campOwner=1;
+                if(CAMP_RED.some(([cr,cc])=>cr===nr&&cc===nc))campOwner=0;
+                if(tar.side===campOwner)continue;
+                if(s===campOwner)continue;
+            }
+        }
+        moves.push({sr,sc,nr,nc});
+    }
+    
+    // ====== 修正：斜走（只有画了斜线的才能走） ======
+    const dirsDiag=[[-1,-1],[-1,1],[1,-1],[1,1]];
+    for(const [dr,dc] of dirsDiag){
+        let nr=sr+dr,nc=sc+dc;
+        if(!isIn(nr,nc))continue;
+        if(isMountain(nr,nc))continue;
+        // 关键：必须检查这条斜线是否画了
+        if(!shouldDrawLine(sr,sc,nr,nc))continue;
+        const tar=b[nr][nc];
+        if(tar.side===s)continue;
+        if(isCamp(nr,nc)){
+            if(tar.side!==-1){
+                let campOwner=-1;
+                if(CAMP_BLUE.some(([cr,cc])=>cr===nr&&cc===nc))campOwner=1;
+                if(CAMP_RED.some(([cr,cc])=>cr===nr&&cc===nc))campOwner=0;
+                if(tar.side===campOwner)continue;
+                if(s===campOwner)continue;
+            }
+        }
+        moves.push({sr,sc,nr,nc});
+    }
+    
+    // 工兵拐弯
+    if(p===GONG){
+        if(isRailNode(sr,sc)){
+            const railDirs=[[-1,0],[1,0],[0,-1],[0,1]];
+            for(const [dr1,dc1] of railDirs){
+                let midR=sr+dr1,midC=sc+dc1;
+                let step1=0;
+                while(isIn(midR,midC)&&!isMountain(midR,midC)&&isRailNode(midR,midC)&&isRailConnected(midR-dr1,midC-dc1,midR,midC)){
+                    step1++;
+                    let blocked1=false;
+                    let rr=sr+dr1,cc=sc+dc1;
+                    while(!(rr===midR&&cc===midC)){
+                        if(board[rr][cc].side!==-1){blocked1=true;break;}
+                        rr+=dr1;cc+=dc1;
+                    }
+                    if(!blocked1 && board[midR][midC].side===s)break;
+                    if(!blocked1){
+                        for(const [dr2,dc2] of railDirs){
+                            if(dr2===-dr1&&dc2===-dc1)continue;
+                            let endR=midR+dr2,endC=midC+dc2;
+                            let step2=0;
+                            while(isIn(endR,endC)&&!isMountain(endR,endC)&&isRailNode(endR,endC)&&isRailConnected(endR-dr2,endC-dc2,endR,endC)){
+                                step2++;
+                                let blocked2=false;
+                                let rr2=midR+dr2,cc2=midC+dc2;
+                                while(!(rr2===endR&&cc2===endC)){
+                                    if(board[rr2][cc2].side!==-1){blocked2=true;break;}
+                                    rr2+=dr2;cc2+=dc2;
+                                }
+                                if(!blocked2){
+                                    const tar=board[endR][endC];
+                                    if(tar.side!==s){
+                                        let canMove=true;
+                                        if(isCamp(endR,endC)){
+                                            if(tar.side!==-1){
+                                                let campOwner=-1;
+                                                if(CAMP_BLUE.some(([cr,cc])=>cr===endR&&cc===endC))campOwner=1;
+                                                if(CAMP_RED.some(([cr,cc])=>cr===endR&&cc===endC))campOwner=0;
+                                                if(tar.side===campOwner)canMove=false;
+                                                if(s===campOwner)canMove=false;
+                                            }
+                                        }
+                                        if(canMove && step1+step2>=2){
+                                            moves.push({sr,sc,nr:endR,nc:endC});
+                                        }
+                                    }
+                                }
+                                if(board[endR][endC].side!==-1)break;
+                                endR+=dr2;endC+=dc2;
+                            }
+                        }
+                    }
+                    if(board[midR][midC].side!==-1)break;
+                    midR+=dr1;midC+=dc1;
+                }
+            }
+        }
+    }
+    return moves;
+}
+
+function genAll(b,side){let a=[];for(let r=0;r<R;r++)for(let c=0;c<C;c++)if(b[r][c].side===side)a.push(...genMoves(b,r,c));return a;}
+
+function cmp(a,b){
+    if(a===ZADAN||b===ZADAN)return 0;
+    if(a===GONG&&b===DILEI)return 1;
+    if(a!==GONG&&b===DILEI)return -1;
+    if(a===DILEI||b===DILEI)return -2;
+    if(a<b)return 1;
+    if(a>b)return -1;
+    return 0;
+}
+
+function doMove(b,mv){
+    let nb=clone(b),me=nb[mv.sr][mv.sc],tar=nb[mv.nr][mv.nc];
+    if(tar.piece===EMP){nb[mv.nr][mv.nc]={side:me.side,piece:me.piece};nb[mv.sr][mv.sc]={side:-1,piece:EMP};return nb;}
+    let c=cmp(me.piece,tar.piece);
+    if(c>0){nb[mv.nr][mv.nc]={side:me.side,piece:me.piece};nb[mv.sr][mv.sc]={side:-1,piece:EMP};}
+    else if(c===0){nb[mv.sr][mv.sc]={side:-1,piece:EMP};nb[mv.nr][mv.nc]={side:-1,piece:EMP};}
+    else{nb[mv.sr][mv.sc]={side:-1,piece:EMP};}
+    return nb;
+}
+
+function checkWin(b){
+    let rf=false,bf=false;
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++)if(b[r][c].piece===QIQI){if(b[r][c].side===0)rf=true;if(b[r][c].side===1)bf=true;}
+    if(!rf)return 1;if(!bf)return 0;return -1;
+}
+
+function evalBoard(b){
+    let s=0;
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+        let cell=b[r][c];if(cell.piece===EMP)continue;
+        let v=VAL[cell.piece]||0,sign=cell.side===1?1:-1,bonus=0;
+        if(isCamp(r,c))bonus=30;
+        if(cell.side===1&&r<4)bonus+=10;
+        if(cell.side===0&&r>7)bonus+=10;
+        s+=sign*(v+bonus);
+    }
+    s+=(cnt(b,1)-cnt(b,0))*20;
+    return s;
+}
+
+function orderMoves(b,moves){return moves.map(m=>{let sc=0,tar=b[m.nr][m.nc];if(tar.side!==-1)sc+=VAL[tar.piece]||0;if(isCamp(m.nr,m.nc))sc+=30;return{...m,score:sc};}).sort((a,b)=>b.score-a.score);}
+
+function ab(b,depth,a,bta,isMax){
+    let w=checkWin(b);if(w===1)return INF-depth;if(w===0)return -INF+depth;if(depth===0)return evalBoard(b);
+    let side=isMax?1:0,moves=genAll(b,side);
+    if(moves.length===0)return isMax?-INF+depth:INF-depth;
+    moves=orderMoves(b,moves);
+    if(isMax){let best=-INF;for(let mv of moves){let sc=ab(doMove(b,mv),depth-1,a,bta,false);if(sc>best)best=sc;if(sc>a)a=sc;if(a>=bta)break;}return best;}
+    else{let best=INF;for(let mv of moves){let sc=ab(doMove(b,mv),depth-1,a,bta,true);if(sc<best)best=sc;if(sc<bta)bta=sc;if(a>=bta)break;}return best;}
+}
+
+function pickBest(b,side){
+    let moves=genAll(b,side);if(!moves.length)return null;
+    moves=orderMoves(b,moves);let best=null,bv=-INF;
+    for(let i=0;i<Math.min(moves.length,25);i++){let mv=moves[i];let v=ab(doMove(b,mv),DEPTH-1,-INF,INF,false);if(v>bv){bv=v;best=mv;}}
+    return best;
+}
+
+function tryMove(sr,sc,tr,tc){
+    let ok=genMoves(board,sr,sc).some(m=>m.nr===tr&&m.nc===tc);if(!ok)return false;
+    let prev=clone(board);board=doMove(board,{sr,sc,nr:tr,nc:tc});history.push(prev);return true;
+}
+
+function aiTurn(){
+    if(thinking)return;thinking=true;document.getElementById('msg').textContent='🤖 思考中...';
+    setTimeout(()=>{
+        let mv=pickBest(board,1);thinking=false;
+        if(!mv){document.getElementById('msg').textContent='❌ AI无棋可走';return;}
+        let prev=clone(board);board=doMove(board,mv);history.push(prev);
+        drawBoard();updateStats();
+        let w=checkWin(board);
+        if(w===1){document.getElementById('msg').textContent='🏆 AI(蓝)胜!';return;}
+        if(w===0){document.getElementById('msg').textContent='🏆 你(红)胜!';return;}
+        document.getElementById('msg').textContent='🔴 你的回合';drawBoard();
+    },80);
+}
+
+function undoMove(){if(history.length&&!thinking){board=history.pop();sel=null;drawBoard();updateStats();document.getElementById('msg').textContent='↩ 已悔棋';}}
+
+function drawBoard(){
+    if(!ctx)return;
+    const W=canvas.width,H=canvas.height;
+    ctx.clearRect(0,0,W,H);
+    cellW=W/C;cellH=H/R;
+    const radius=Math.min(cellW,cellH)*0.32;
+    const nodeRadius=Math.min(cellW,cellH)*0.06;
+
+    function isRailLine(r1,c1,r2,c2){
+        if(r1!==r2 && c1!==c2)return false;
+        return isRailConnected(r1,c1,r2,c2);
+    }
+
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]];
+    
+    ctx.lineWidth=2.5;
+    ctx.strokeStyle='#e74c3c';
+    for(let r=0;r<R;r++){
+        for(let c=0;c<C;c++){
+            for(const [dr,dc] of dirs){
+                if(dr!==0 && dc!==0)continue;
+                const nr=r+dr,nc=c+dc;
+                if(!isIn(nr,nc))continue;
+                if(r>nr||(r===nr&&c>nc))continue;
+                if(!shouldDrawLine(r,c,nr,nc))continue;
+                if(isRailLine(r,c,nr,nc)){
+                    const x1=c*cellW+cellW/2;
+                    const y1=r*cellH+cellH/2;
+                    const x2=nc*cellW+cellW/2;
+                    const y2=nr*cellH+cellH/2;
+                    ctx.beginPath();
+                    ctx.moveTo(x1,y1);
+                    ctx.lineTo(x2,y2);
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+    
+    ctx.strokeStyle='#3498db';
+    ctx.lineWidth=1.5;
+    ctx.setLineDash([4,4]);
+    for(let r=0;r<R;r++){
+        for(let c=0;c<C;c++){
+            for(const [dr,dc] of dirs){
+                const nr=r+dr,nc=c+dc;
+                if(!isIn(nr,nc))continue;
+                if(r>nr||(r===nr&&c>nc))continue;
+                if(!shouldDrawLine(r,c,nr,nc))continue;
+                if(!isRailLine(r,c,nr,nc)){
+                    const x1=c*cellW+cellW/2;
+                    const y1=r*cellH+cellH/2;
+                    const x2=nc*cellW+cellW/2;
+                    const y2=nr*cellH+cellH/2;
+                    ctx.beginPath();
+                    ctx.moveTo(x1,y1);
+                    ctx.lineTo(x2,y2);
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+    ctx.setLineDash([]);
+
+    ctx.fillStyle='#3a5a7a';
+    for(let r=0;r<R;r++){
+        for(let c=0;c<C;c++){
+            if(isMountain(r,c))continue;
+            const x=c*cellW+cellW/2;
+            const y=r*cellH+cellH/2;
+            ctx.beginPath();
+            ctx.arc(x,y,nodeRadius,0,Math.PI*2);
+            ctx.fill();
+        }
+    }
+
+    for(let [r,c] of [[6,1],[6,3]]){
+        const x=c*cellW+cellW/2;
+        const y=r*cellH+cellH/2;
+        ctx.fillStyle='rgba(200,100,50,0.5)';
+        ctx.fillRect(x-cellW*0.45,y-cellH*0.45,cellW*0.9,cellH*0.9);
+        ctx.fillStyle='#e67e22';
+        ctx.font='bold 14px sans-serif';
+        ctx.textAlign='center';
+        ctx.textBaseline='middle';
+        ctx.fillText('⛰️',x,y+0.5);
+    }
+
+    for(let [r,c] of CAMP_BLUE){
+        const x=c*cellW+cellW/2;
+        const y=r*cellH+cellH/2;
+        ctx.fillStyle='rgba(50,100,255,0.25)';
+        ctx.strokeStyle='rgba(50,100,255,0.6)';
+        ctx.lineWidth=1.5;
+        ctx.beginPath();
+        ctx.arc(x,y,radius*0.9,0,Math.PI*2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle='rgba(50,100,255,0.6)';
+        ctx.font='10px sans-serif';
+        ctx.textAlign='center';
+        ctx.textBaseline='middle';
+        ctx.fillText('X',x,y+0.5);
+    }
+    
+    for(let [r,c] of CAMP_RED){
+        const x=c*cellW+cellW/2;
+        const y=r*cellH+cellH/2;
+        ctx.fillStyle='rgba(255,80,80,0.25)';
+        ctx.strokeStyle='rgba(255,80,80,0.6)';
+        ctx.lineWidth=1.5;
+        ctx.beginPath();
+        ctx.arc(x,y,radius*0.9,0,Math.PI*2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle='rgba(255,80,80,0.6)';
+        ctx.font='10px sans-serif';
+        ctx.textAlign='center';
+        ctx.textBaseline='middle';
+        ctx.fillText('X',x,y+0.5);
+    }
+
+    for(let [r,c] of [FLAG_BLUE, FLAG_RED]){
+        const x=c*cellW+cellW/2;
+        const y=r*cellH+cellH/2;
+        ctx.strokeStyle='rgba(255,200,50,0.7)';
+        ctx.lineWidth=2;
+        ctx.strokeRect(x-radius*0.7,y-radius*0.7,radius*1.4,radius*1.4);
+        ctx.fillStyle='rgba(255,200,50,0.1)';
+        ctx.fillRect(x-radius*0.7,y-radius*0.7,radius*1.4,radius*1.4);
+    }
+
+    for(let r=0;r<R;r++){
+        for(let c=0;c<C;c++){
+            const cell=board[r][c];
+            if(cell.piece===EMP)continue;
+            const x=c*cellW+cellW/2;
+            const y=r*cellH+cellH/2;
+            const grad=ctx.createRadialGradient(x-2,y-2,2,x,y,radius);
+            if(cell.side===0){
+                grad.addColorStop(0,'#e74c3c');
+                grad.addColorStop(1,'#922B21');
+            }else{
+                grad.addColorStop(0,'#3498db');
+                grad.addColorStop(1,'#1a5276');
+            }
+            ctx.fillStyle=grad;
+            ctx.shadowColor='rgba(0,0,0,0.5)';
+            ctx.shadowBlur=6;
+            ctx.beginPath();
+            ctx.arc(x,y,radius,0,Math.PI*2);
+            ctx.fill();
+            ctx.shadowBlur=0;
+            ctx.strokeStyle='rgba(255,255,255,0.2)';
+            ctx.lineWidth=1;
+            ctx.stroke();
+            ctx.fillStyle='#fff';
+            ctx.font='bold 10px sans-serif';
+            ctx.textAlign='center';
+            ctx.textBaseline='middle';
+            ctx.fillText(NAME[cell.piece]||'',x,y+0.5);
+        }
+    }
+
+    if(sel){
+        const x=sel.c*cellW+cellW/2;
+        const y=sel.r*cellH+cellH/2;
+        ctx.shadowColor='#f1c40f';
+        ctx.shadowBlur=16;
+        ctx.strokeStyle='#f1c40f';
+        ctx.lineWidth=3;
+        ctx.beginPath();
+        ctx.arc(x,y,radius+4,0,Math.PI*2);
+        ctx.stroke();
+        ctx.shadowBlur=0;
+        const moves=genMoves(board,sel.r,sel.c);
+        for(const mv of moves){
+            const tx=mv.nr*cellW+cellW/2;
+            const ty=mv.nc*cellH+cellH/2;
+            ctx.fillStyle='rgba(241,196,15,0.35)';
+            ctx.beginPath();
+            ctx.arc(tx,ty,radius*0.5,0,Math.PI*2);
+            ctx.fill();
+        }
+    }
+}
+
+function updateStats(){document.getElementById('statInfo').textContent=`红 ${cnt(board,0)} | 蓝 ${cnt(board,1)}`;}
+function posFromMouse(mx,my){let c=Math.round((mx-cellW/2)/cellW),r=Math.round((my-cellH/2)/cellH);return isIn(r,c)?{r,c}:null;}
+function clickCell(r,c){
+    if(thinking)return;let cell=board[r][c];
+    if(!sel){if(cell.side===0){sel={r,c};drawBoard();}return;}
+    if(sel.r===r&&sel.c===c){sel=null;drawBoard();return;}
+    if(tryMove(sel.r,sel.c,r,c)){sel=null;drawBoard();updateStats();let w=checkWin(board);if(w===0){document.getElementById('msg').textContent='🏆 你(红)胜!';return;}document.getElementById('msg').textContent='🤖 思考中...';setTimeout(aiTurn,100);}
+    else{sel=null;drawBoard();}
+}
+function onMouseDown(e){let rect=canvas.getBoundingClientRect();let pos=posFromMouse(e.clientX-rect.left,e.clientY-rect.top);if(pos)clickCell(pos.r,pos.c);}
+window.onload=function(){canvas=document.getElementById('cv');ctx=canvas.getContext('2d');canvas.addEventListener('mousedown',onMouseDown);resetGame();};
+</script>
+</body>
+</html>
